@@ -202,7 +202,8 @@ Route::withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfTok
             $id = $item['id'] ?? null;
             $type = $item['entity_type'] ?? '';
             $uuid = $item['entity_uuid'] ?? '';
-            $payload = is_array($item['payload'] ?? null) ? $item['payload'] : json_decode($item['payload'] ?? '{}', true) ?: [];
+            $rawPayload = $item['payload'] ?? null;
+            $payload = is_array($rawPayload) ? $rawPayload : (is_string($rawPayload) ? (json_decode($rawPayload, true) ?: []) : []);
 
             if ($type === 'email_tracking') {
                 DB::table('email_tracking')->updateOrInsert(
