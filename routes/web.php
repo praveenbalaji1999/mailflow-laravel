@@ -92,168 +92,179 @@ function ensureMailFlowTables() {
     }
 }
 
-// ─── 24/7 Public Cloud Tracking Endpoints (With & Without /api Prefix) ───────
-$trackOpenHandler = function (string $trackingId, Request $request) {
-    ensureMailFlowTables();
-    $now = now();
-    
-    // Update or insert tracking record
-    $exists = DB::table('email_tracking')->where('tracking_id', $trackingId)->first();
-    if ($exists) {
-        DB::table('email_tracking')->where('tracking_id', $trackingId)->update([
-            'open_count'      => $exists->open_count + 1,
-            'first_opened_at' => $exists->first_opened_at ?? $now,
-            'last_opened_at'  => $now,
-            'updated_at'      => $now,
+// ─── 24/7 Cloud API & Tracking Group (CSRF Excluded) ────────────────────────
+Route::withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class])->group(function () {
+
+    // 1. Open Tracking
+    $trackOpen = function (string $trackingId, Request $request) {
+        ensureMailFlowTables();
+        $now = now();
+        
+        $exists = DB::table('email_tracking')->where('tracking_id', $trackingId)->first();
+        if ($exists) {
+            DB::table('email_tracking')->where('tracking_id', $trackingId)->update([
+                'open_count'      => $exists->open_count + 1,
+                'first_opened_at' => $exists->first_opened_at ?? $now,
+                'last_opened_at'  => $now,
+                'updated_at'      => $now,
+            ]);
+        } else {
+            DB::table('email_tracking')->insert([
+                'tracking_id'     => $trackingId,
+                'open_count'      => 1,
+                'first_opened_at' => $now,
+                'last_opened_at'  => $now,
+                'created_at'      => $now,
+                'updated_at'      => $now,
+            ]);
+        }
+
+        DB::table('tracking_events')->insert([
+            'tracking_id' => $trackingId,
+            'event_type'  => 'open',
+            'occurred_at' => $now,
+            'user_agent'  => substr($request->header('User-Agent') ?? '', 0, 255),
+            'ip_address'  => $request->ip(),
+            'created_at'  => $now,
+            'updated_at'  => $now,
         ]);
-    } else {
-        DB::table('email_tracking')->insert([
-            'tracking_id'     => $trackingId,
-            'open_count'      => 1,
-            'first_opened_at' => $now,
-            'last_opened_at'  => $now,
-            'created_at'      => $now,
-            'updated_at'      => $now,
+
+        $pixel = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
+        return response($pixel, 200, [
+            'Content-Type'  => 'image/gif',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma'        => 'no-cache',
+            'Expires'       => '0',
         ]);
-    }
+    };
 
-    DB::table('tracking_events')->insert([
-        'tracking_id' => $trackingId,
-        'event_type'  => 'open',
-        'occurred_at' => $now,
-        'user_agent'  => substr($request->header('User-Agent') ?? '', 0, 255),
-        'ip_address'  => $request->ip(),
-        'created_at'  => $now,
-        'updated_at'  => $now,
-    ]);
+    // 2. Click Tracking
+    $trackClick = function (string $trackingId, string $linkId, Request $request) {
+        ensureMailFlowTables();
+        $now = now();
+        
+        $link = DB::table('tracked_links')
+            ->where('tracking_id', $trackingId)
+            ->where('link_id', $linkId)
+            ->first();
 
-    $pixel = base64_decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
-    return response($pixel, 200, [
-        'Content-Type'  => 'image/gif',
-        'Cache-Control' => 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma'        => 'no-cache',
-        'Expires'       => '0',
-    ]);
-};
+        $destination = ($link && !empty($link->original_url)) ? $link->original_url : 'https://google.com';
 
-$trackClickHandler = function (string $trackingId, string $linkId, Request $request) {
-    ensureMailFlowTables();
-    $now = now();
-    
-    $link = DB::table('tracked_links')
-        ->where('tracking_id', $trackingId)
-        ->where('link_id', $linkId)
-        ->first();
+        if ($link) {
+            DB::table('tracked_links')
+                ->where('id', $link->id)
+                ->update([
+                    'click_count'      => $link->click_count + 1,
+                    'first_clicked_at' => $link->first_clicked_at ?? $now,
+                    'last_clicked_at'  => $now,
+                    'updated_at'       => $now,
+                ]);
+        }
 
-    $destination = ($link && !empty($link->original_url)) ? $link->original_url : 'https://google.com';
-
-    if ($link) {
-        DB::table('tracked_links')
-            ->where('id', $link->id)
-            ->update([
-                'click_count'      => $link->click_count + 1,
-                'first_clicked_at' => $link->first_clicked_at ?? $now,
+        $tracking = DB::table('email_tracking')->where('tracking_id', $trackingId)->first();
+        if ($tracking) {
+            DB::table('email_tracking')->where('tracking_id', $trackingId)->update([
+                'click_count'      => $tracking->click_count + 1,
+                'first_clicked_at' => $tracking->first_clicked_at ?? $now,
                 'last_clicked_at'  => $now,
                 'updated_at'       => $now,
             ]);
-    }
-
-    $tracking = DB::table('email_tracking')->where('tracking_id', $trackingId)->first();
-    if ($tracking) {
-        DB::table('email_tracking')->where('tracking_id', $trackingId)->update([
-            'click_count'      => $tracking->click_count + 1,
-            'first_clicked_at' => $tracking->first_clicked_at ?? $now,
-            'last_clicked_at'  => $now,
-            'updated_at'       => $now,
-        ]);
-    }
-
-    DB::table('tracking_events')->insert([
-        'tracking_id' => $trackingId,
-        'event_type'  => 'click',
-        'link_id'     => $linkId,
-        'occurred_at' => $now,
-        'user_agent'  => substr($request->header('User-Agent') ?? '', 0, 255),
-        'ip_address'  => $request->ip(),
-        'created_at'  => $now,
-        'updated_at'  => $now,
-    ]);
-
-    return redirect()->away($destination, 302, [
-        'Cache-Control' => 'no-cache, no-store, must-revalidate',
-    ]);
-};
-
-// Register routes with and without /api prefix
-Route::get('/api/track/open/{trackingId}', $trackOpenHandler);
-Route::get('/track/open/{trackingId}', $trackOpenHandler);
-
-Route::get('/api/track/click/{trackingId}/{linkId}', $trackClickHandler);
-Route::get('/track/click/{trackingId}/{linkId}', $trackClickHandler);
-
-// ─── Sync Push & Pull Endpoints ─────────────────────────────────────────────
-Route::post('/api/sync/push', function (Request $request) {
-    ensureMailFlowTables();
-    $items = $request->input('items', []);
-    $syncedIds = [];
-
-    foreach ($items as $item) {
-        $id = $item['id'] ?? null;
-        $type = $item['entity_type'] ?? '';
-        $uuid = $item['entity_uuid'] ?? '';
-        $payload = json_decode($item['payload'] ?? '{}', true) ?: [];
-
-        if ($type === 'email_tracking') {
-            DB::table('email_tracking')->updateOrInsert(
-                ['tracking_id' => $payload['tracking_id'] ?? $uuid],
-                [
-                    'recipient_email' => $payload['recipient_email'] ?? '',
-                    'campaign_id'     => $payload['campaign_id'] ?? null,
-                    'updated_at'      => now(),
-                ]
-            );
-        } elseif ($type === 'tracked_link') {
-            DB::table('tracked_links')->updateOrInsert(
-                [
-                    'tracking_id' => $payload['tracking_id'] ?? '',
-                    'link_id'     => $payload['link_id'] ?? $uuid,
-                ],
-                [
-                    'original_url' => $payload['original_url'] ?? '',
-                    'updated_at'   => now(),
-                ]
-            );
         }
 
-        if ($id !== null) $syncedIds[] = $id;
-    }
+        DB::table('tracking_events')->insert([
+            'tracking_id' => $trackingId,
+            'event_type'  => 'click',
+            'link_id'     => $linkId,
+            'occurred_at' => $now,
+            'user_agent'  => substr($request->header('User-Agent') ?? '', 0, 255),
+            'ip_address'  => $request->ip(),
+            'created_at'  => $now,
+            'updated_at'  => $now,
+        ]);
 
-    return response()->json(['status' => 'success', 'synced_ids' => $syncedIds]);
+        return redirect()->away($destination, 302, [
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+        ]);
+    };
+
+    Route::get('/api/track/open/{trackingId}', $trackOpen);
+    Route::get('/track/open/{trackingId}', $trackOpen);
+    Route::get('/api/track/click/{trackingId}/{linkId}', $trackClick);
+    Route::get('/track/click/{trackingId}/{linkId}', $trackClick);
+
+    // 3. Sync Push
+    Route::match(['GET', 'POST'], '/api/sync/push', function (Request $request) {
+        ensureMailFlowTables();
+        $items = $request->input('items', []);
+        $syncedIds = [];
+
+        foreach ($items as $item) {
+            $id = $item['id'] ?? null;
+            $type = $item['entity_type'] ?? '';
+            $uuid = $item['entity_uuid'] ?? '';
+            $payload = is_array($item['payload'] ?? null) ? $item['payload'] : json_decode($item['payload'] ?? '{}', true) ?: [];
+
+            if ($type === 'email_tracking') {
+                DB::table('email_tracking')->updateOrInsert(
+                    ['tracking_id' => $payload['tracking_id'] ?? $uuid],
+                    [
+                        'recipient_email' => $payload['recipient_email'] ?? '',
+                        'campaign_id'     => $payload['campaign_id'] ?? null,
+                        'updated_at'      => now(),
+                    ]
+                );
+            } elseif ($type === 'tracked_link') {
+                DB::table('tracked_links')->updateOrInsert(
+                    [
+                        'tracking_id' => $payload['tracking_id'] ?? '',
+                        'link_id'     => $payload['link_id'] ?? $uuid,
+                    ],
+                    [
+                        'original_url' => $payload['original_url'] ?? '',
+                        'updated_at'   => now(),
+                    ]
+                );
+            }
+
+            if ($id !== null) $syncedIds[] = $id;
+        }
+
+        return response()->json(['status' => 'success', 'synced_ids' => $syncedIds]);
+    });
+
+    // 4. Sync Pull
+    Route::match(['GET', 'POST'], '/api/sync/pull', function (Request $request) {
+        ensureMailFlowTables();
+        $since = $request->input('since');
+        $q = DB::table('tracking_events');
+        if (!empty($since)) {
+            try {
+                $dt = new \DateTime($since);
+                $q->where('occurred_at', '>=', $dt->format('Y-m-d H:i:s'));
+            } catch (\Throwable $e) {
+                $q->where('occurred_at', '>=', $since);
+            }
+        }
+        $events = $q->orderBy('occurred_at', 'asc')->limit(1000)->get();
+
+        return response()->json([
+            'status' => 'success',
+            'events' => $events->map(fn($e) => [
+                'id'          => $e->id,
+                'tracking_id' => $e->tracking_id,
+                'event_type'  => $e->event_type,
+                'link_id'     => $e->link_id,
+                'occurred_at' => $e->occurred_at,
+                'user_agent'  => $e->user_agent,
+                'ip_address'  => $e->ip_address,
+            ])
+        ]);
+    });
+
+    // 5. Health Check
+    Route::get('/api/health', fn() => response()->json([
+        'status'  => 'ok',
+        'service' => 'MailFlow 24/7 Cloud Tracking Gateway',
+        'time'    => now()
+    ]));
 });
-
-Route::post('/api/sync/pull', function (Request $request) {
-    ensureMailFlowTables();
-    $since = $request->input('since');
-    $q = DB::table('tracking_events');
-    if (!empty($since)) $q->where('occurred_at', '>=', $since);
-    $events = $q->orderBy('occurred_at', 'asc')->limit(1000)->get();
-
-    return response()->json([
-        'status' => 'success',
-        'events' => $events->map(fn($e) => [
-            'id'          => $e->id,
-            'tracking_id' => $e->tracking_id,
-            'event_type'  => $e->event_type,
-            'link_id'     => $e->link_id,
-            'occurred_at' => $e->occurred_at,
-            'user_agent'  => $e->user_agent,
-            'ip_address'  => $e->ip_address,
-        ])
-    ]);
-});
-
-Route::get('/api/health', fn() => response()->json([
-    'status'  => 'ok',
-    'service' => 'MailFlow 24/7 Cloud Tracking Gateway',
-    'time'    => now()
-]));
